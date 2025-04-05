@@ -5,10 +5,14 @@ from math import sqrt
 import copy 
 import math 
 from torch.autograd import Variable
-
+import numpy as np 
 def clone_module(Module,N):
     return nn.ModuleList([copy.deepcopy(Module) for i in range(N)])
 
+def get_attn_subsequent_mask(seq):
+    attn_shape = [seq.size(0),seq.size(1),seq.size(1)]
+    subsequent_mask = np.triu(np.ones(attn_shape),k=1)
+    return torch.from_numpy(subsequent_mask)
 
 class LayerNorm(nn.Module):
     "Construct a layernorm module (See citation for details)."
