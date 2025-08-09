@@ -53,7 +53,7 @@ def im2col_indices(x, field_height, field_width, padding=1, stride=1):
     else:
         raise TypeError("Padding must be an integer or a tuple/list of two integers (pad_h, pad_w)")
 
-
+    print(f'x_padded = {x_padded}')
     # Ensure stride is integer or tuple/list of two integers
     if isinstance(stride, (int, float)):
         stride_h = stride_w = int(stride)
@@ -81,11 +81,11 @@ def im2col_indices(x, field_height, field_width, padding=1, stride=1):
     return cols
 
 
-def col2im_indices(cols, x_shape, field_height=3, field_width=3, padding=1, stride=1):
-    """im2col 的逆运算 (使用循环实现，可能较慢但更清晰)"""
+def col2im_indices_optimized(cols, x_shape, field_height=3, field_width=3, padding=1, stride=1):
+    """im2col 的逆运算 (使用 np.add.at 优化)"""
     N, C, H, W = x_shape
 
-    # Ensure padding is integer or tuple/list
+    # --- 参数处理 ---
     if isinstance(padding, (int, float)):
         pad_h = pad_w = int(padding)
     elif isinstance(padding, (tuple, list)) and len(padding) == 2:
@@ -93,7 +93,6 @@ def col2im_indices(cols, x_shape, field_height=3, field_width=3, padding=1, stri
     else:
         raise TypeError("Padding must be an integer or a tuple/list of two integers (pad_h, pad_w)")
 
-    # Ensure stride is integer or tuple/list
     if isinstance(stride, (int, float)):
         stride_h = stride_w = int(stride)
     elif isinstance(stride, (tuple, list)) and len(stride) == 2:
@@ -101,28 +100,34 @@ def col2im_indices(cols, x_shape, field_height=3, field_width=3, padding=1, stri
     else:
         raise TypeError("Stride must be an integer or a tuple/list of two integers (stride_h, stride_w)")
 
-
+    # --- 计算维度 ---
     H_padded, W_padded = H + 2 * pad_h, W + 2 * pad_w
-    x_padded = np.zeros((N, C, H_padded, W_padded), dtype=cols.dtype)
-
     out_h = (H + 2 * pad_h - field_height) // stride_h + 1
     out_w = (W + 2 * pad_w - field_width) // stride_w + 1
+    KH, KW = field_height, field_width
 
-    # Reshape cols: (C*KH*KW, N*OH*OW) -> (C, KH, KW, N, OH, OW)
-    cols_reshaped = cols.reshape(C, field_height, field_width, N, out_h, out_w)
+    # --- 初始化输出数组 ---
+    x_padded = np.zeros((N, C, H_padded, W_padded), dtype=cols.dtype)
 
-    for n in range(N):
-        for c in range(C):
-            for kh in range(field_height):
-                for kw in range(field_width):
-                    for h in range(out_h):
-                        for w in range(out_w):
-                            h_pad = h * stride_h + kh
-                            w_pad = w * stride_w + kw
-                            # Accumulate gradients/values for overlapping regions
-                            x_padded[n, c, h_pad, w_pad] += cols_reshaped[c, kh, kw, n, h, w]
+    # --- 生成索引网格 ---
+    c_grid, kh_grid, kw_grid, n_grid, h_grid, w_grid = np.meshgrid(
+        np.arange(C), np.arange(KH), np.arange(KW),
+        np.arange(N), np.arange(out_h), np.arange(out_w), indexing='ij'
+    )
 
-    # Remove padding
+    # --- 计算目标索引 ---
+    n_target_idx = n_grid
+    c_target_idx = c_grid
+    h_target_idx = h_grid * stride_h + kh_grid
+    w_target_idx = w_grid * stride_w + kw_grid
+
+    # --- Reshape cols 以匹配索引网格 ---
+    values = cols.reshape(C, KH, KW, N, out_h, out_w)
+
+    # --- 使用 np.add.at 进行累加 ---
+    np.add.at(x_padded, (n_target_idx, c_target_idx, h_target_idx, w_target_idx), values)
+
+    # --- 去除填充 ---
     if pad_h == 0 and pad_w == 0:
         return x_padded
     elif pad_h > 0 and pad_w > 0:
@@ -217,10 +222,11 @@ if __name__ == '__main__':
         print("Difference:", np.abs(conv_out_im2col - conv_out_naive).max())
 
 
-    # (可选) 执行 col2im
-    print("\nAttempting col2im (Note: col2im validation is separate)...")
+    # (可选) 执行 col2im (使用优化版本)
+    print("\nAttempting col2im (Optimized, Note: col2im validation is separate)...")
     try:
-        x_reconstructed = col2im_indices(cols, x.shape, kernel_h, kernel_w, padding=padding, stride=stride)
+        # 使用优化后的函数
+        x_reconstructed = col2im_indices_optimized(cols, x.shape, kernel_h, kernel_w, padding=padding, stride=stride)
         print("Reconstructed image shape:", x_reconstructed.shape)
         print("Reconstructed image (x_reconstructed):")
         print(x_reconstructed)
@@ -272,10 +278,11 @@ if __name__ == '__main__':
         print("Difference:", np.abs(conv_out_im2col2 - conv_out_naive2).max())
 
 
-    # Test col2im for the second example
-    print("\nAttempting col2im for second example (Note: col2im validation is separate)...")
+    # Test col2im for the second example (使用优化版本)
+    print("\nAttempting col2im for second example (Optimized, Note: col2im validation is separate)...")
     try:
-        x2_reconstructed = col2im_indices(cols2, x2.shape, kernel_h2, kernel_w2, padding=padding2, stride=stride2)
+        # 使用优化后的函数
+        x2_reconstructed = col2im_indices_optimized(cols2, x2.shape, kernel_h2, kernel_w2, padding=padding2, stride=stride2)
         print("Reconstructed image shape:", x2_reconstructed.shape)
         # In non-overlapping cases, reconstruction might be easier to verify,
         # but col2im still sums contributions if stride < kernel size.
